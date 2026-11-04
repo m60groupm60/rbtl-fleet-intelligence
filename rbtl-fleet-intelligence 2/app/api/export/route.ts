@@ -1,0 +1,5 @@
+import {NextRequest,NextResponse} from 'next/server';
+import {dashboardData} from '@/lib/data';
+function cell(v:unknown){const s=String(v??'');const safe=/^[=+@\-\t\r]/.test(s)?"'"+s:s;return '"'+safe.replace(/"/g,'""')+'"'}
+export const dynamic='force-dynamic';
+export async function GET(req:NextRequest){try{const result=await dashboardData(req.nextUrl.searchParams);if(result.status!==200)return NextResponse.json({error:result.error},{status:result.status});const d=result.data;const codes=d.selected;const lines=[['Van','Driver(s)','DVIC records',...codes,'Total'].map(cell).join(','),...d.rows.map(r=>[r.registration,r.drivers.join('; '),r.dvics,...codes.map(c=>r.alerts[c]||0),r.total].map(cell).join(','))];return new NextResponse('\uFEFF'+lines.join('\r\n'),{headers:{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="rbtl-fleet-${d.date}.csv"`,'Cache-Control':'private, no-store'}})}catch{return NextResponse.json({error:'Export unavailable'},{status:500})}}

@@ -1,0 +1,3 @@
+export const ALERTS=[
+ ['LOW-IMPACT','Low Impact'],['DRIVER-INITIATED','Driver Initiated'],['POTENTIAL-COLLISION','Potential Collision'],['SIGN-VIOLATIONS','Sign Violations'],['TRAFFIC-LIGHT-VIOLATION','Traffic Light Violation'],['U-TURN','U Turn'],['HARD-BRAKING','Hard Braking'],['HARD-TURN','Hard Turn'],['HARD-ACCELERATION','Hard Acceleration'],['DRIVER-DISTRACTION','Driver Distraction'],['FOLLOWING-DISTANCE','Following Distance'],['SPEEDING-VIOLATIONS','Speeding Violations'],['SEATBELT-COMPLIANCE','Seatbelt Compliance'],['CAMERA-OBSTRUCTION','Camera Obstruction'],['COLLISION-WARNING','Collision Warning'],['BACKING','Backing']
+] as const;
