@@ -1,4 +1,4 @@
-import { supabaseServer } from './supabase';
+import { supabaseServer } from './supabase-server';
 export type Profile = { id:string; role:'manager'|'driver'; display_name:string; inspector_ids:string[] };
 export async function getViewer(){
   const supabase=await supabaseServer();
