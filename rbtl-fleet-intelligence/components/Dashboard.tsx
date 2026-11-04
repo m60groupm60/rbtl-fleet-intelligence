@@ -19,30 +19,6 @@ const text = (value: unknown): string =>
 const regKey = (value: unknown): string =>
   text(value).toUpperCase().replace(/[^A-Z0-9]/g, "");
 
-const STANDARD_ALERT_TYPES = [
-  "Low Impact", "Driver Initiated", "Potential Collision",
-  "Sign Violations", "Traffic Light Violation", "U Turn",
-  "Hard Braking", "Hard Turn", "Hard Acceleration",
-  "Driver Distraction", "Following Distance", "Speeding Violations",
-  "Seatbelt Compliance", "Camera Obstruction", "Collision Warning",
-  "Backing",
-];
-
-const alertTypeKey = (value: unknown): string =>
-  text(value).trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
-
-const STANDARD_ALERT_NAMES = new Map(
-  STANDARD_ALERT_TYPES.map((name) => [alertTypeKey(name), name])
-);
-
-const canonicalAlertType = (value: unknown): string => {
-  const raw = text(value).trim();
-  if (!raw) return "";
-  return STANDARD_ALERT_NAMES.get(alertTypeKey(raw)) ||
-    raw.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim()
-      .toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
-};
-
 const today = (): string => {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Europe/London",
@@ -69,6 +45,9 @@ export default function Dashboard({
   const [dailyDate, setDailyDate] = useState(today());
   const [hiddenAlertTypes, setHiddenAlertTypes] = useState<string[]>([]);
   const [hideZeroAlertDrivers, setHideZeroAlertDrivers] = useState(false);
+  const [showDailyFilters, setShowDailyFilters] = useState(false);
+  const [dailySort, setDailySort] = useState("registration");
+  const [dailySortDesc, setDailySortDesc] = useState(false);
   const [from, setFrom] = useState(today());
   const [to, setTo] = useState(today());
   const [vehicle, setVehicle] = useState("");
@@ -353,7 +332,7 @@ export default function Dashboard({
 
   const alertTypes = [
     ...new Set(
-      alerts.map((a) => canonicalAlertType(a.alert_type)).filter(Boolean)
+      alerts.map((a) => text(a.alert_type)).filter(Boolean)
     ),
   ].sort();
 
@@ -380,7 +359,7 @@ export default function Dashboard({
       return false;
     }
 
-    if (alertType && canonicalAlertType(a.alert_type) !== alertType) {
+    if (alertType && text(a.alert_type) !== alertType) {
       return false;
     }
 
@@ -608,12 +587,25 @@ export default function Dashboard({
 
   // The daily report uses the same Supabase data and saved van/date overrides
   // as the existing Overview and Netradyne pages.
-  const dailyAlertTypes = [
-    ...STANDARD_ALERT_TYPES,
-    ...[...new Set(
-      alerts.map((a) => canonicalAlertType(a.alert_type)).filter(Boolean)
-    )].filter((type) => !STANDARD_ALERT_NAMES.has(alertTypeKey(type))).sort(),
+  const canonicalAlertTypes = [
+    "Low Impact", "Driver Initiated", "Potential Collision",
+    "Sign Violations", "Traffic Light Violation", "U Turn",
+    "Hard Braking", "Hard Turn", "Hard Acceleration",
+    "Driver Distraction", "Following Distance", "Speeding Violations",
+    "Seatbelt Compliance", "Camera Obstruction", "Collision Warning", "Backing",
   ];
+  const normalizeAlertType = (raw: unknown): string => {
+    const value = text(raw).trim();
+    const key = value.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const match = canonicalAlertTypes.find(
+      (name) => name.toLowerCase().replace(/[^a-z0-9]/g, "") === key
+    );
+    return match || value;
+  };
+  const dailyAlertTypes = [
+    ...canonicalAlertTypes,
+    ...new Set(alerts.map((a) => normalizeAlertType(a.alert_type)).filter(Boolean)),
+  ].filter((type, index, all) => all.indexOf(type) === index);
   const shownDailyTypes = dailyAlertTypes.filter(
     (type) => !hiddenAlertTypes.includes(type)
   );
@@ -661,7 +653,7 @@ export default function Dashboard({
   alerts.forEach((a) => {
     const date = text(a.alert_date);
     const registration = regKey(a.registration);
-    const type = canonicalAlertType(a.alert_type);
+    const type = normalizeAlertType(a.alert_type);
     if (date !== dailyDate || !registration || !type) return;
     if (vehicle && registration !== regKey(vehicle)) return;
 
@@ -684,13 +676,34 @@ export default function Dashboard({
 
   const dailyRows = [...dailyRowsMap.values()]
     .filter((row) => !hideZeroAlertDrivers || dailyCount(row) > 0)
-    .sort((a, b) =>
-      b.date.localeCompare(a.date) ||
-      a.registration.localeCompare(b.registration) ||
-      a.driverName.localeCompare(b.driverName)
-    );
+    .sort((a, b) => {
+      const value = (row: DailyEntry): string | number => {
+        if (dailySort === "date") return row.date;
+        if (dailySort === "registration") return row.registration;
+        if (dailySort === "driver") return row.driverName;
+        if (dailySort === "total") return dailyCount(row);
+        return row.counts[dailySort] || 0;
+      };
+      const left = value(a);
+      const right = value(b);
+      const comparison = typeof left === "number" && typeof right === "number"
+        ? left - right
+        : String(left).localeCompare(String(right));
+      return (dailySortDesc ? -comparison : comparison) ||
+        a.registration.localeCompare(b.registration) ||
+        a.driverName.localeCompare(b.driverName);
+    });
 
   const dailyTotal = dailyRows.reduce((sum, row) => sum + dailyCount(row), 0);
+  const dailyColumnTotal = (type: string) =>
+    dailyRows.reduce((sum, row) => sum + (row.counts[type] || 0), 0);
+  const changeDailySort = (column: string) => {
+    if (dailySort === column) setDailySortDesc((previous) => !previous);
+    else {
+      setDailySort(column);
+      setDailySortDesc(column === "total" || dailyAlertTypes.includes(column));
+    }
+  };
 
   function exportDailyCsv() {
     const headers = ["Date", "Registration", "Driver", ...shownDailyTypes, "Total"];
@@ -701,7 +714,7 @@ export default function Dashboard({
     ]);
     const csv = [headers, ...records]
       .map((cells) => cells.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(","))
-      .join("\\r\\n");
+      .join("\r\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -920,78 +933,6 @@ export default function Dashboard({
             </label>
           )}
 
-          {tab === "daily" && (
-          <section className="panel">
-            <div className="panel-head">
-              <h2>Daily Netradyne alert breakdown</h2>
-              <span>{dailyRows.length} van / driver rows</span>
-            </div>
-            <div style={{ padding: "20px", display: "flex", flexWrap: "wrap", gap: "16px", alignItems: "end" }}>
-              <label>
-                Report date
-                <input type="date" value={dailyDate} onChange={(e) => {
-                  const date = e.target.value;
-                  if (!date) return;
-                  setDailyDate(date);
-                  setFrom(date);
-                  setTo(date);
-                }} />
-              </label>
-              <label style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                <input type="checkbox" checked={hideZeroAlertDrivers}
-                  onChange={(e) => setHideZeroAlertDrivers(e.target.checked)} />
-                Hide drivers with zero selected alerts
-              </label>
-              <button className="refresh" onClick={exportDailyCsv}>Export CSV</button>
-            </div>
-            <div style={{ padding: "0 20px 20px" }}>
-              <strong>Alert columns</strong>
-              <div style={{ display: "flex", gap: "10px", margin: "12px 0", flexWrap: "wrap" }}>
-                <button className="refresh" onClick={() => setHiddenAlertTypes([])}>Show all</button>
-                <button className="refresh" onClick={() => setHiddenAlertTypes([...dailyAlertTypes])}>Clear all</button>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "10px" }}>
-                {dailyAlertTypes.map((type) => (
-                  <label key={type} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <input type="checkbox" checked={!hiddenAlertTypes.includes(type)}
-                      onChange={(e) => setHiddenAlertTypes((old) =>
-                        e.target.checked ? old.filter((t) => t !== type) : [...old, type]
-                      )} />
-                    {type}
-                  </label>
-                ))}
-              </div>
-              <p className="muted">
-                {dailyRows.length} rows · {dailyTotal} selected alerts.
-                Unassigned alerts are kept separate when a van has multiple drivers and no manual override.
-              </p>
-            </div>
-            <div className="table-wrap" style={{ overflowX: "auto" }}>
-              <table style={{ minWidth: "max-content" }}>
-                <thead><tr>
-                  <th>Date</th><th>Registration</th><th>Driver</th>
-                  {shownDailyTypes.map((type) => <th key={type}>{type}</th>)}
-                  <th>Total</th>
-                </tr></thead>
-                <tbody>
-                  {dailyRows.map((row) => (
-                    <tr key={`${row.date}|${row.registration}|${row.driverName}`}>
-                      <td>{row.date}</td>
-                      <td><b>{row.registration}</b></td>
-                      <td>{row.driverName}</td>
-                      {shownDailyTypes.map((type) => (
-                        <td key={type} style={{ textAlign: "center" }}>{row.counts[type] || 0}</td>
-                      ))}
-                      <td><b>{dailyCount(row)}</b></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {!dailyRows.length && <p className="empty">No matching drivers or alerts for this date.</p>}
-            </div>
-          </section>
-        )}
-
         {tab === "inspections" && (
             <label>
               Result
@@ -1021,6 +962,116 @@ export default function Dashboard({
             Refresh
           </button>
         </section>
+
+        {tab === "daily" && (
+          <section className="panel" style={{ marginBottom: 24 }}>
+            <div className="panel-head">
+              <h2>Daily Netradyne alert breakdown</h2>
+              <span>{dailyRows.length} van / driver rows</span>
+            </div>
+            <div style={{ padding: "18px 22px", display: "flex", flexWrap: "wrap", gap: 18, alignItems: "end" }}>
+              <label>Report date
+                <input type="date" value={dailyDate} onChange={(e) => {
+                  const date = e.target.value;
+                  if (!date) return;
+                  setDailyDate(date);
+                  setFrom(date);
+                  setTo(date);
+                }} />
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={hideZeroAlertDrivers}
+                  onChange={(e) => setHideZeroAlertDrivers(e.target.checked)} />
+                Hide drivers with zero selected alerts
+              </label>
+              <button type="button" className="refresh" onClick={exportDailyCsv}>Export CSV</button>
+              <button type="button" className="refresh" onClick={() => setShowDailyFilters((v) => !v)}>
+                {showDailyFilters ? "Hide alert filters" : `Alert filters (${shownDailyTypes.length}/${dailyAlertTypes.length})`}
+              </button>
+            </div>
+            {showDailyFilters && (
+              <div style={{ padding: "0 22px 18px" }}>
+                <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                  <button type="button" className="refresh" onClick={() => setHiddenAlertTypes([])}>Show all</button>
+                  <button type="button" className="refresh" onClick={() => setHiddenAlertTypes([...dailyAlertTypes])}>Clear all</button>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12 }}>
+                  {dailyAlertTypes.map((type) => (
+                    <label key={type} style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13 }}>
+                      <input type="checkbox" checked={!hiddenAlertTypes.includes(type)}
+                        onChange={(e) => setHiddenAlertTypes((old) =>
+                          e.target.checked ? old.filter((t) => t !== type) : [...old, type]
+                        )} />
+                      {type}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+            <p className="muted" style={{ padding: "0 22px 12px", margin: 0 }}>
+              {dailyRows.length} rows · {dailyTotal} selected alerts. Click any column heading to sort.
+              Unassigned alerts remain separate when a van has multiple drivers without an override.
+            </p>
+            <div className="table-wrap" style={{ overflowX: "auto", maxWidth: "100%" }}>
+              <table style={{ minWidth: "max-content", borderCollapse: "separate", borderSpacing: 0 }}>
+                <thead><tr>
+                  {[
+                    ["date", "Date"], ["registration", "Registration"], ["driver", "Driver"],
+                  ].map(([key, label], index) => (
+                    <th key={key} onClick={() => changeDailySort(key)}
+                      style={{ cursor: "pointer", position: "sticky", left: index === 0 ? 0 : index === 1 ? 115 : 255,
+                        zIndex: 4, minWidth: index === 2 ? 220 : index === 1 ? 140 : 115,
+                        background: "#e9f0fa", whiteSpace: "nowrap" }}>
+                      {label} {dailySort === key ? (dailySortDesc ? "▼" : "▲") : ""}
+                    </th>
+                  ))}
+                  {shownDailyTypes.map((type) => (
+                    <th key={type} onClick={() => changeDailySort(type)}
+                      style={{ cursor: "pointer", whiteSpace: "nowrap", textAlign: "center", background: "#e9f0fa" }}>
+                      {type} {dailySort === type ? (dailySortDesc ? "▼" : "▲") : ""}
+                    </th>
+                  ))}
+                  <th onClick={() => changeDailySort("total")}
+                    style={{ cursor: "pointer", background: "#e9f0fa", textAlign: "center" }}>
+                    Total {dailySort === "total" ? (dailySortDesc ? "▼" : "▲") : ""}
+                  </th>
+                </tr></thead>
+                <tbody>
+                  {dailyRows.map((row) => {
+                    const zero = dailyCount(row) === 0;
+                    const background = zero ? "#eaf8ee" : "#ffffff";
+                    return (
+                      <tr key={`${row.date}|${row.registration}|${row.driverName}`}
+                        style={{ background }}>
+                        {[row.date, row.registration, row.driverName].map((value, index) => (
+                          <td key={index} style={{ position: "sticky", left: index === 0 ? 0 : index === 1 ? 115 : 255,
+                            minWidth: index === 2 ? 220 : index === 1 ? 140 : 115,
+                            background, zIndex: 2, whiteSpace: "nowrap" }}>
+                            {index === 1 ? <b>{value}</b> : value}
+                          </td>
+                        ))}
+                        {shownDailyTypes.map((type) => (
+                          <td key={type} style={{ textAlign: "center" }}>{row.counts[type] || 0}</td>
+                        ))}
+                        <td style={{ textAlign: "center", fontWeight: 700 }}>{dailyCount(row)}</td>
+                      </tr>
+                    );
+                  })}
+                  {dailyRows.length > 0 && (
+                    <tr style={{ background: "#e9f0fa", fontWeight: 700 }}>
+                      <td colSpan={3} style={{ position: "sticky", left: 0, background: "#e9f0fa", zIndex: 3 }}>TOTAL</td>
+                      {shownDailyTypes.map((type) => (
+                        <td key={type} style={{ textAlign: "center" }}>{dailyColumnTotal(type)}</td>
+                      ))}
+                      <td style={{ textAlign: "center" }}>{dailyTotal}</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+              {!dailyRows.length && <p className="empty">No matching drivers or alerts for this date.</p>}
+            </div>
+          </section>
+        )}
 
         {error && (
           <p className="error">{error}</p>
