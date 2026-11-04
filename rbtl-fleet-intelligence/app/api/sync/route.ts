@@ -15,10 +15,38 @@ type AlertRow = {
   event_count: number;
 };
 
+type AssignmentRow = {
+  assignment_date: string;
+  registration: string;
+  inspector_id: string | null;
+  inspection_id: string;
+  inspection_time: string | null;
+  driver_name: string | null;
+};
+
 function validToken(received: string, expected: string) {
   const a = Buffer.from(received);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function clean(value: unknown) {
+  return String(value ?? '').trim();
+}
+
+function registration(value: unknown) {
+  return clean(value)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+function validDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+
+  const date = new Date(value + 'T00:00:00Z');
+
+  return !Number.isNaN(date.getTime()) &&
+    date.toISOString().slice(0, 10) === value;
 }
 
 export async function POST(request: NextRequest) {
@@ -46,34 +74,86 @@ export async function POST(request: NextRequest) {
     }
 
     const payload = await request.json();
-    const rows = payload?.alerts;
 
-    if (!Array.isArray(rows) || rows.length > 500) {
+    if (!payload || typeof payload !== 'object') {
       return NextResponse.json(
-        { error: 'Expected up to 500 alerts' },
+        { error: 'Invalid payload' },
         { status: 400 }
       );
     }
 
-    const alerts: AlertRow[] = rows.map((row: AlertRow) => ({
-      source_event_id: String(row.source_event_id || ''),
-      alert_date: String(row.alert_date || ''),
-      registration: String(row.registration || '')
-        .toUpperCase().replace(/[^A-Z0-9]/g, ''),
-      alert_type: String(row.alert_type || ''),
-      description: row.description || null,
-      severity: row.severity || null,
-      event_count: Number(row.event_count) || 1
-    }));
+    const hasAlerts = Array.isArray(payload.alerts);
+    const hasAssignments = Array.isArray(payload.assignments);
+
+    if (!hasAlerts && !hasAssignments) {
+      return NextResponse.json(
+        { error: 'Expected alerts or assignments' },
+        { status: 400 }
+      );
+    }
+
+    const rawAlerts = hasAlerts ? payload.alerts : [];
+    const rawAssignments = hasAssignments
+      ? payload.assignments
+      : [];
+
+    if (rawAlerts.length > 500 || rawAssignments.length > 500) {
+      return NextResponse.json(
+        { error: 'Maximum 500 records per type' },
+        { status: 400 }
+      );
+    }
+
+    const alerts: AlertRow[] = rawAlerts.map(
+      (row: Record<string, unknown>) => ({
+        source_event_id: clean(row.source_event_id),
+        alert_date: clean(row.alert_date),
+        registration: registration(row.registration),
+        alert_type: clean(row.alert_type),
+        description: clean(row.description) || null,
+        severity: clean(row.severity) || null,
+        event_count: Number(row.event_count) || 1
+      })
+    );
 
     if (alerts.some(a =>
       !a.source_event_id ||
-      !/^\d{4}-\d{2}-\d{2}$/.test(a.alert_date) ||
+      !validDate(a.alert_date) ||
       !a.registration ||
-      !a.alert_type
+      !a.alert_type ||
+      !Number.isFinite(a.event_count) ||
+      a.event_count < 1
     )) {
       return NextResponse.json(
         { error: 'Invalid alert data' },
+        { status: 400 }
+      );
+    }
+
+    const assignments: AssignmentRow[] = rawAssignments.map(
+      (row: Record<string, unknown>) => ({
+        assignment_date: clean(row.assignment_date),
+        registration: registration(row.registration),
+        inspector_id: clean(row.inspector_id) || null,
+        inspection_id: clean(row.inspection_id),
+        inspection_time: clean(row.inspection_time) || null,
+        driver_name: clean(row.driver_name) || null
+      })
+    );
+
+    if (assignments.some(a =>
+      !validDate(a.assignment_date) ||
+      !a.registration ||
+      !a.inspection_id ||
+      (
+        a.inspection_time !== null &&
+        !/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(
+          a.inspection_time
+        )
+      )
+    )) {
+      return NextResponse.json(
+        { error: 'Invalid driver assignment data' },
         { status: 400 }
       );
     }
@@ -100,9 +180,25 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (assignments.length) {
+      const { error } = await supabase
+        .from('driver_assignments')
+        .upsert(assignments, {
+          onConflict: 'inspection_id'
+        });
+
+      if (error) {
+        return NextResponse.json(
+          { error: error.message },
+          { status: 400 }
+        );
+      }
+    }
+
     return NextResponse.json({
       success: true,
-      processed: alerts.length
+      alerts_processed: alerts.length,
+      assignments_processed: assignments.length
     });
 
   } catch {
