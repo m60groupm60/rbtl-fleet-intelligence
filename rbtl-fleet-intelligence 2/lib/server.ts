@@ -3,7 +3,7 @@ import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 
 export async function serverClient() {
-  const jar = await cookies();
+  const cookieStore = await cookies();
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -11,20 +11,21 @@ export async function serverClient() {
     {
       cookies: {
         getAll() {
-          return jar.getAll();
+          return cookieStore.getAll();
         },
-
-        setAll(items: {
-          name: string;
-          value: string;
-          options?: Parameters<typeof jar.set>[2];
-        }[]) {
+        setAll(
+          items: {
+            name: string;
+            value: string;
+            options?: Parameters<typeof cookieStore.set>[2];
+          }[]
+        ) {
           try {
             items.forEach(({ name, value, options }) => {
-              jar.set(name, value, options);
+              cookieStore.set(name, value, options);
             });
           } catch {
-            // Cookie writes are unavailable in some Server Components.
+            // Cookie updates may be unavailable in Server Components.
           }
         },
       },
