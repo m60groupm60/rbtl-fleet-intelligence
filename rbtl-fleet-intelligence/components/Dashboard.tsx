@@ -1,4 +1,5 @@
 "use client";
+const regKey=(v:unknown)=>text(v).toUpperCase().replace(/[^A-Z0-9]/g,'');
 import {useEffect,useMemo,useState} from 'react';import {browserClient} from '@/lib/supabase';
 type Profile={id:string;full_name:string|null;role:string};type Row=Record<string,unknown>;
 const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Europe/London'});
