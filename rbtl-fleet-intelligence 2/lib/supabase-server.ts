@@ -1,8 +1,22 @@
 
-import 'server-only';
-
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+
+type CookieOptions = {
+  domain?: string;
+  path?: string;
+  maxAge?: number;
+  expires?: Date;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: boolean | 'lax' | 'strict' | 'none';
+};
+
+type CookieToSet = {
+  name: string;
+  value: string;
+  options?: CookieOptions;
+};
 
 export async function supabaseServer() {
   const cookieStore = await cookies();
@@ -15,14 +29,14 @@ export async function supabaseServer() {
         getAll() {
           return cookieStore.getAll();
         },
-        setAll(cookiesToSet) {
+
+        setAll(cookiesToSet: CookieToSet[]) {
           try {
             cookiesToSet.forEach(({ name, value, options }) => {
               cookieStore.set(name, value, options);
             });
           } catch {
-            // Cookie updates may not be permitted
-            // inside Server Components.
+            // Server Components cannot always write cookies.
           }
         },
       },
