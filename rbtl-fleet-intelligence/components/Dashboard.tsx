@@ -33,21 +33,6 @@ const today = (): string => {
   return `${part("year")}-${part("month")}-${part("day")}`;
 };
 
-function getDriverName(
-  assignment: Row,
-  profileNames: Map<string, string>
-): string {
-  const direct = text(assignment.driver_name).trim();
-
-  if (direct && direct.toUpperCase() !== "UNMAPPED") {
-    return direct;
-  }
-
-  const linked = profileNames.get(text(assignment.driver_id));
-
-  return linked || "Unmapped";
-}
-
 export default function Dashboard({
   profile,
 }: {
@@ -69,11 +54,15 @@ export default function Dashboard({
   const [inspections, setInspections] = useState<Row[]>([]);
   const [alerts, setAlerts] = useState<Row[]>([]);
   const [profiles, setProfiles] = useState<Row[]>([]);
+  const [overrides, setOverrides] = useState<Row[]>([]);
+  const [roster, setRoster] = useState<string[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
+  const [savingKey, setSavingKey] = useState("");
+  const [saveMessage, setSaveMessage] = useState("");
 
   async function load() {
     setLoading(true);
@@ -109,6 +98,22 @@ export default function Dashboard({
               .select("id,full_name,role")
               .limit(1000)
           : Promise.resolve({ data: [], error: null }),
+
+        manager
+          ? db.from("netradyne_driver_overrides")
+              .select("*")
+              .gte("assignment_date", from)
+              .lte("assignment_date", to)
+              .limit(5000)
+          : Promise.resolve({ data: [], error: null }),
+
+        manager
+          ? db.from("driver_assignments")
+              .select("driver_name")
+              .not("driver_name", "is", null)
+              .order("assignment_date", { ascending: false })
+              .limit(5000)
+          : Promise.resolve({ data: [], error: null }),
       ]);
 
       const tables = [
@@ -117,6 +122,8 @@ export default function Dashboard({
         "dvic_inspections",
         "netradyne_alerts",
         "profiles",
+        "netradyne_driver_overrides",
+        "driver_roster",
       ];
 
       const failures = requests
@@ -136,6 +143,21 @@ export default function Dashboard({
       setInspections(requests[2].data || []);
       setAlerts(requests[3].data || []);
       setProfiles(requests[4].data || []);
+      setOverrides(requests[5].data || []);
+
+      setRoster(
+        [
+          ...new Set(
+            (requests[6].data || [])
+              .map((row) => text(row.driver_name).trim())
+              .filter(
+                (name) =>
+                  name &&
+                  name.toUpperCase() !== "UNMAPPED"
+              )
+          ),
+        ].sort()
+      );
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Unable to load data"
@@ -160,24 +182,30 @@ export default function Dashboard({
     [profiles]
   );
 
-  const assignmentName = (row: Row) =>
-    getDriverName(row, profileNames);
+  const assignmentName = (row: Row): string => {
+    const direct = text(row.driver_name).trim();
 
-  const matchesDriver = (row: Row) =>
-    !driver ||
-    text(row.driver_id) === driver ||
-    assignmentName(row) === driver ||
-    text(row.inspector_id) === driver;
+    if (direct && direct.toUpperCase() !== "UNMAPPED") {
+      return direct;
+    }
 
-  const matchingAssignments = (
+    return (
+      profileNames.get(text(row.driver_id)) ||
+      "Unmapped"
+    );
+  };
+
+  const overrideName = (
     registration: string,
     date: string
-  ) =>
-    assignments.filter(
-      (a) =>
-        regKey(a.registration) === regKey(registration) &&
-        text(a.assignment_date) === date
-    );
+  ): string =>
+    text(
+      overrides.find(
+        (o) =>
+          regKey(o.registration) === regKey(registration) &&
+          text(o.assignment_date) === date
+      )?.driver_name
+    ).trim();
 
   const driverNames = (
     registration: string,
@@ -195,6 +223,47 @@ export default function Dashboard({
     return [...new Set(names)].join(", ") || "—";
   };
 
+  const alertDriverName = (row: Row): string =>
+    overrideName(
+      text(row.registration),
+      text(row.alert_date)
+    ) ||
+    driverNames(
+      text(row.registration),
+      text(row.alert_date)
+    );
+
+  const driverOptions = [
+    ...new Set(
+      [
+        ...roster,
+        ...assignments.map(assignmentName),
+        ...overrides.map((o) => text(o.driver_name)),
+      ].filter(
+        (name) =>
+          name &&
+          name !== "Unmapped" &&
+          name !== "—"
+      )
+    ),
+  ].sort();
+
+  const matchesDriver = (row: Row): boolean =>
+    !driver ||
+    text(row.driver_id) === driver ||
+    assignmentName(row) === driver ||
+    text(row.inspector_id) === driver;
+
+  const matchingAssignments = (
+    registration: string,
+    date: string
+  ): Row[] =>
+    assignments.filter(
+      (a) =>
+        regKey(a.registration) === regKey(registration) &&
+        text(a.assignment_date) === date
+    );
+
   const assignmentByInspectionId = useMemo(
     () =>
       new Map(
@@ -205,7 +274,7 @@ export default function Dashboard({
     [assignments]
   );
 
-  const inspectionDriver = (row: Row) => {
+  const inspectionDriver = (row: Row): string => {
     const match = assignmentByInspectionId.get(
       text(row.inspection_id)
     );
@@ -221,7 +290,7 @@ export default function Dashboard({
   const matchesRelatedDriver = (
     row: Row,
     dateField: string
-  ) => {
+  ): boolean => {
     if (!driver) return true;
 
     if (text(row.driver_id) === driver) return true;
@@ -255,16 +324,10 @@ export default function Dashboard({
     [vehicles, assignments, inspections, alerts]
   );
 
-  const driverOptions = [
-    ...new Set(
-      assignments
-        .map(assignmentName)
-        .filter((name) => name !== "Unmapped")
-    ),
-  ].sort();
-
   const alertTypes = [
-    ...new Set(alerts.map((a) => text(a.alert_type))),
+    ...new Set(
+      alerts.map((a) => text(a.alert_type)).filter(Boolean)
+    ),
   ].sort();
 
   const filteredAssignments = assignments.filter(
@@ -282,18 +345,55 @@ export default function Dashboard({
       (!result || text(i.result) === result)
   );
 
-  const filteredAlerts = alerts.filter(
-    (a) =>
-      (!vehicle ||
-        regKey(a.registration) === regKey(vehicle)) &&
-      matchesRelatedDriver(a, "alert_date") &&
-      (!alertType || text(a.alert_type) === alertType)
-  );
+  const filteredAlerts = alerts.filter((a) => {
+    if (
+      vehicle &&
+      regKey(a.registration) !== regKey(vehicle)
+    ) {
+      return false;
+    }
+
+    if (alertType && text(a.alert_type) !== alertType) {
+      return false;
+    }
+
+    if (!driver) return true;
+
+    const manual = overrideName(
+      text(a.registration),
+      text(a.alert_date)
+    );
+
+    if (manual) return manual === driver;
+
+    return matchesRelatedDriver(a, "alert_date");
+  });
 
   const alertCount = filteredAlerts.reduce(
     (sum, a) => sum + (Number(a.event_count) || 0),
     0
   );
+
+  const vanCount = new Set(
+    [
+      ...filteredAssignments,
+      ...filteredInspections,
+      ...filteredAlerts,
+    ]
+      .map((row) => regKey(row.registration))
+      .filter(Boolean)
+  ).size;
+
+  const activeVehicleCount = new Set(
+    [
+      ...vehicles.filter((v) => v.active !== false),
+      ...filteredAssignments,
+      ...filteredInspections,
+      ...filteredAlerts,
+    ]
+      .map((row) => regKey(row.registration))
+      .filter(Boolean)
+  ).size;
 
   const inspectionIds = new Set(
     filteredInspections
@@ -318,72 +418,155 @@ export default function Dashboard({
     }
   );
 
-  const visibleAssignmentInspections = result
-    ? []
-    : assignmentInspections;
-
   const dvicCount =
     filteredInspections.length +
-    visibleAssignmentInspections.length;
+    assignmentInspections.length;
 
-  const vanCount = new Set(
-    [
-      ...filteredAssignments,
-      ...filteredInspections,
-      ...filteredAlerts,
-    ]
-      .map((row) => regKey(row.registration))
-      .filter(Boolean)
-  ).size;
+  const unassignedAlerts = manager
+    ? [
+        ...new Map(
+          alerts
+            .filter(
+              (a) =>
+                !overrideName(
+                  text(a.registration),
+                  text(a.alert_date)
+                ) &&
+                driverNames(
+                  text(a.registration),
+                  text(a.alert_date)
+                ) === "—"
+            )
+            .map((a) => [
+              `${text(a.alert_date)}|${regKey(a.registration)}`,
+              {
+                date: text(a.alert_date),
+                registration: regKey(a.registration),
+              },
+            ])
+        ).values(),
+      ]
+        .map((item) => ({
+          ...item,
+          count: alerts
+            .filter(
+              (a) =>
+                text(a.alert_date) === item.date &&
+                regKey(a.registration) === item.registration
+            )
+            .reduce(
+              (sum, a) =>
+                sum + (Number(a.event_count) || 0),
+              0
+            ),
+        }))
+        .filter((item) => item.count > 0)
+        .sort(
+          (a, b) =>
+            a.date.localeCompare(b.date) ||
+            a.registration.localeCompare(b.registration)
+        )
+    : [];
 
-  const activeVehicleCount = new Set(
-    [
-      ...vehicles.filter((v) => v.active !== false),
-      ...filteredAssignments,
-      ...filteredInspections,
-      ...filteredAlerts,
-    ]
-      .map((row) => regKey(row.registration))
-      .filter(Boolean)
-  ).size;
+  async function saveOverride(
+    date: string,
+    registration: string,
+    driverName: string
+  ) {
+    if (!manager || !driverName) return;
+
+    const key = `${date}|${registration}`;
+
+    setSavingKey(key);
+    setSaveMessage("");
+
+    try {
+      const { error: saveError } = await db
+        .from("netradyne_driver_overrides")
+        .upsert(
+          {
+            assignment_date: date,
+            registration: regKey(registration),
+            driver_name: driverName,
+            created_by: profile.id,
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: "assignment_date,registration",
+          }
+        );
+
+      if (saveError) {
+        setSaveMessage(`Error: ${saveError.message}`);
+        return;
+      }
+
+      setSaveMessage(
+        `Saved ${registration} for ${date}: ${driverName}`
+      );
+
+      await load();
+    } catch (err) {
+      setSaveMessage(
+        err instanceof Error
+          ? err.message
+          : "Unable to save assignment"
+      );
+    } finally {
+      setSavingKey("");
+    }
+  }
 
   const breakdown = registrations
-    .filter((reg) => !vehicle || reg === regKey(vehicle))
+    .filter(
+      (reg) => !vehicle || reg === regKey(vehicle)
+    )
     .map((registration) => {
       const relatedAssignments =
         filteredAssignments.filter(
-          (a) => regKey(a.registration) === registration
-        );
-
-      const relatedInspections =
-        filteredInspections.filter(
-          (i) => regKey(i.registration) === registration
-        );
-
-      const relatedAssignmentInspections =
-        visibleAssignmentInspections.filter(
-          (a) => regKey(a.registration) === registration
+          (a) =>
+            regKey(a.registration) === registration
         );
 
       const relatedAlerts = filteredAlerts.filter(
-        (a) => regKey(a.registration) === registration
+        (a) =>
+          regKey(a.registration) === registration
       );
+
+      const names = [
+        ...new Set(
+          [
+            ...relatedAssignments
+              .map(assignmentName)
+              .filter((name) => name !== "Unmapped"),
+
+            ...relatedAlerts
+              .map((a) =>
+                overrideName(
+                  registration,
+                  text(a.alert_date)
+                )
+              )
+              .filter(Boolean),
+          ]
+        ),
+      ];
 
       return {
         registration,
-        driver:
-          [
-            ...new Set(
-              relatedAssignments
-                .map(assignmentName)
-                .filter((name) => name !== "Unmapped")
-            ),
-          ].join(", ") || "—",
+        driver: names.join(", ") || "—",
         inspections:
-          relatedInspections.length +
-          relatedAssignmentInspections.length,
+          filteredInspections.filter(
+            (i) =>
+              regKey(i.registration) === registration
+          ).length +
+          assignmentInspections.filter(
+            (a) =>
+              regKey(a.registration) === registration
+          ).length,
         alerts: relatedAlerts.reduce(
-          (sum, a) => sum + (Number(a.event_count) || 0),
+          (sum, a) =>
+            sum + (Number(a.event_count) || 0),
           0
         ),
       };
@@ -474,7 +657,9 @@ export default function Dashboard({
         {navigation.map(([id, label]) => (
           <button
             key={id}
-            className={"nav " + (tab === id ? "active" : "")}
+            className={
+              "nav " + (tab === id ? "active" : "")
+            }
             onClick={() => setTab(id)}
           >
             {label}
@@ -482,9 +667,15 @@ export default function Dashboard({
         ))}
 
         <div className="side-footer">
-          <div>{profile.full_name || "RBTL User"}</div>
-          <small>{manager ? "Manager" : "Driver"} account</small>
-          <button onClick={signOut}>Sign out</button>
+          <div>
+            {profile.full_name || "RBTL User"}
+          </div>
+          <small>
+            {manager ? "Manager" : "Driver"} account
+          </small>
+          <button onClick={signOut}>
+            Sign out
+          </button>
         </div>
       </aside>
 
@@ -494,6 +685,7 @@ export default function Dashboard({
             <small>RBTL / OPERATIONS</small>
             <h1>{pageTitles[tab]}</h1>
           </div>
+
           <span className="role">
             {manager ? "MANAGER" : "DRIVER"} ACCESS
           </span>
@@ -506,7 +698,9 @@ export default function Dashboard({
               type="date"
               value={from}
               max={to}
-              onChange={(e) => setFrom(e.target.value)}
+              onChange={(e) =>
+                setFrom(e.target.value)
+              }
             />
           </label>
 
@@ -516,7 +710,9 @@ export default function Dashboard({
               type="date"
               value={to}
               min={from}
-              onChange={(e) => setTo(e.target.value)}
+              onChange={(e) =>
+                setTo(e.target.value)
+              }
             />
           </label>
 
@@ -524,9 +720,13 @@ export default function Dashboard({
             Vehicle
             <select
               value={vehicle}
-              onChange={(e) => setVehicle(e.target.value)}
+              onChange={(e) =>
+                setVehicle(e.target.value)
+              }
             >
-              <option value="">All vehicles</option>
+              <option value="">
+                All vehicles
+              </option>
               {registrations.map((reg) => (
                 <option key={reg} value={reg}>
                   {reg}
@@ -540,11 +740,18 @@ export default function Dashboard({
               Driver
               <select
                 value={driver}
-                onChange={(e) => setDriver(e.target.value)}
+                onChange={(e) =>
+                  setDriver(e.target.value)
+                }
               >
-                <option value="">All drivers</option>
+                <option value="">
+                  All drivers
+                </option>
                 {driverOptions.map((name) => (
-                  <option key={name} value={name}>
+                  <option
+                    key={name}
+                    value={name}
+                  >
                     {name}
                   </option>
                 ))}
@@ -557,11 +764,17 @@ export default function Dashboard({
               Alert type
               <select
                 value={alertType}
-                onChange={(e) => setAlertType(e.target.value)}
+                onChange={(e) =>
+                  setAlertType(e.target.value)
+                }
               >
-                <option value="">All alerts</option>
+                <option value="">
+                  All alerts
+                </option>
                 {alertTypes.map((type) => (
-                  <option key={type}>{type}</option>
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
                 ))}
               </select>
             </label>
@@ -572,50 +785,175 @@ export default function Dashboard({
               Result
               <select
                 value={result}
-                onChange={(e) => setResult(e.target.value)}
+                onChange={(e) =>
+                  setResult(e.target.value)
+                }
               >
-                <option value="">All results</option>
-                <option value="PASSED">PASSED</option>
-                <option value="FAILED">FAILED</option>
+                <option value="">
+                  All results
+                </option>
+                <option value="PASSED">
+                  PASSED
+                </option>
+                <option value="FAILED">
+                  FAILED
+                </option>
               </select>
             </label>
           )}
 
-          <button className="refresh" onClick={load}>
+          <button
+            className="refresh"
+            onClick={load}
+          >
             Refresh
           </button>
         </section>
 
-        {error && <p className="error">{error}</p>}
-        {loading && (
-          <p className="muted">Loading fleet data…</p>
+        {error && (
+          <p className="error">{error}</p>
         )}
 
-        {(tab === "overview" || tab === "vans") && (
+        {loading && (
+          <p className="muted">
+            Loading fleet data…
+          </p>
+        )}
+
+        {manager &&
+          (tab === "overview" ||
+            tab === "alerts") &&
+          unassignedAlerts.length > 0 && (
+            <section className="panel">
+              <div className="panel-head">
+                <h2>
+                  Unassigned Netradyne alerts
+                </h2>
+                <span>
+                  {unassignedAlerts.length} van/date groups
+                </span>
+              </div>
+
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Registration</th>
+                      <th>Alerts</th>
+                      <th>
+                        Assign all alerts to driver
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {unassignedAlerts.map((item) => (
+                      <tr
+                        key={
+                          item.date +
+                          "|" +
+                          item.registration
+                        }
+                      >
+                        <td>{item.date}</td>
+                        <td>
+                          <b>{item.registration}</b>
+                        </td>
+                        <td>{item.count}</td>
+                        <td>
+                          <select
+                            defaultValue=""
+                            disabled={!!savingKey}
+                            onChange={(e) => {
+                              if (e.target.value) {
+                                void saveOverride(
+                                  item.date,
+                                  item.registration,
+                                  e.target.value
+                                );
+                              }
+                            }}
+                          >
+                            <option value="">
+                              Select driver…
+                            </option>
+
+                            {driverOptions.map(
+                              (name) => (
+                                <option
+                                  key={name}
+                                  value={name}
+                                >
+                                  {name}
+                                </option>
+                              )
+                            )}
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {saveMessage && (
+                <p className="muted">
+                  {saveMessage}
+                </p>
+              )}
+            </section>
+          )}
+
+        {(tab === "overview" ||
+          tab === "vans") && (
           <>
             <section className="metrics">
               <div>
-                <small>ACTIVE VEHICLES</small>
-                <strong>{activeVehicleCount}</strong>
+                <small>
+                  ACTIVE VEHICLES
+                </small>
+                <strong>
+                  {activeVehicleCount}
+                </strong>
               </div>
+
               <div>
-                <small>DVIC INSPECTIONS</small>
-                <strong>{dvicCount}</strong>
+                <small>
+                  DVIC INSPECTIONS
+                </small>
+                <strong>
+                  {dvicCount}
+                </strong>
               </div>
+
               <div>
-                <small>NETRADYNE EVENTS</small>
-                <strong>{alertCount}</strong>
+                <small>
+                  NETRADYNE EVENTS
+                </small>
+                <strong>
+                  {alertCount}
+                </strong>
               </div>
+
               <div>
-                <small>VANS WITH ACTIVITY</small>
-                <strong>{vanCount}</strong>
+                <small>
+                  VANS WITH ACTIVITY
+                </small>
+                <strong>
+                  {vanCount}
+                </strong>
               </div>
             </section>
 
             <section className="panel">
               <div className="panel-head">
-                <h2>Vehicle performance</h2>
-                <span>Selected date range</span>
+                <h2>
+                  Vehicle performance
+                </h2>
+                <span>
+                  Selected date range
+                </span>
               </div>
 
               <div className="table-wrap">
@@ -631,10 +969,20 @@ export default function Dashboard({
 
                   <tbody>
                     {breakdown.map((row) => (
-                      <tr key={row.registration}>
-                        <td><b>{row.registration}</b></td>
-                        <td>{row.driver}</td>
-                        <td>{row.inspections}</td>
+                      <tr
+                        key={row.registration}
+                      >
+                        <td>
+                          <b>
+                            {row.registration}
+                          </b>
+                        </td>
+                        <td>
+                          {row.driver}
+                        </td>
+                        <td>
+                          {row.inspections}
+                        </td>
                         <td>
                           <span
                             className={
@@ -664,8 +1012,12 @@ export default function Dashboard({
         {tab === "inspections" && (
           <section className="panel">
             <div className="panel-head">
-              <h2>Inspection history</h2>
-              <span>{dvicCount} records</span>
+              <h2>
+                Inspection history
+              </h2>
+              <span>
+                {dvicCount} records
+              </span>
             </div>
 
             <div className="table-wrap">
@@ -681,46 +1033,167 @@ export default function Dashboard({
                       "Result",
                       "Inspection ID",
                     ].map((heading) => (
-                      <th key={heading}>{heading}</th>
+                      <th key={heading}>
+                        {heading}
+                      </th>
                     ))}
                   </tr>
                 </thead>
 
                 <tbody>
-                  {visibleAssignmentInspections.map((a) => (
-                    <tr key={"assignment-" + text(a.id)}>
-                      <td>{text(a.assignment_date)}</td>
-                      <td>{text(a.inspection_time)}</td>
-                      <td>{text(a.registration)}</td>
-                      <td>{assignmentName(a)}</td>
-                      <td>{text(a.inspector_id)}</td>
-                      <td>—</td>
-                      <td>{text(a.inspection_id)}</td>
-                    </tr>
-                  ))}
+                  {!result &&
+                    assignmentInspections.map(
+                      (a) => (
+                        <tr
+                          key={
+                            "assignment-" +
+                            text(a.id)
+                          }
+                        >
+                          <td>
+                            {text(a.assignment_date)}
+                          </td>
+                          <td>
+                            {text(a.inspection_time)}
+                          </td>
+                          <td>
+                            {text(a.registration)}
+                          </td>
+                          <td>
+                            {assignmentName(a)}
+                          </td>
+                          <td>
+                            {text(a.inspector_id)}
+                          </td>
+                          <td>—</td>
+                          <td>
+                            {text(a.inspection_id)}
+                          </td>
+                        </tr>
+                      )
+                    )}
 
-                  {filteredInspections.map((i) => (
-                    <tr key={"inspection-" + text(i.id)}>
-                      <td>{text(i.inspection_date)}</td>
-                      <td>{text(i.inspection_time)}</td>
-                      <td>{text(i.registration)}</td>
-                      <td>{inspectionDriver(i)}</td>
-                      <td>{text(i.inspector_id)}</td>
-                      <td>{text(i.result)}</td>
-                      <td>{text(i.inspection_id)}</td>
-                    </tr>
-                  ))}
+                  {filteredInspections.map(
+                    (i) => (
+                      <tr
+                        key={
+                          "inspection-" +
+                          text(i.id)
+                        }
+                      >
+                        <td>
+                          {text(i.inspection_date)}
+                        </td>
+                        <td>
+                          {text(i.inspection_time)}
+                        </td>
+                        <td>
+                          {text(i.registration)}
+                        </td>
+                        <td>
+                          {inspectionDriver(i)}
+                        </td>
+                        <td>
+                          {text(i.inspector_id)}
+                        </td>
+                        <td>
+                          {text(i.result)}
+                        </td>
+                        <td>
+                          {text(i.inspection_id)}
+                        </td>
+                      </tr>
+                    )
+                  )}
                 </tbody>
               </table>
             </div>
           </section>
         )}
 
+        {manager &&
+          tab === "alerts" &&
+          overrides.length > 0 && (
+            <section className="panel">
+              <div className="panel-head">
+                <h2>
+                  Manual Netradyne assignments
+                </h2>
+                <span>
+                  Change driver
+                </span>
+              </div>
+
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Registration</th>
+                      <th>
+                        Assigned driver
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {overrides.map((o) => (
+                      <tr
+                        key={text(o.id)}
+                      >
+                        <td>
+                          {text(o.assignment_date)}
+                        </td>
+                        <td>
+                          {text(o.registration)}
+                        </td>
+                        <td>
+                          <select
+                            value={text(
+                              o.driver_name
+                            )}
+                            disabled={!!savingKey}
+                            onChange={(e) =>
+                              void saveOverride(
+                                text(
+                                  o.assignment_date
+                                ),
+                                text(
+                                  o.registration
+                                ),
+                                e.target.value
+                              )
+                            }
+                          >
+                            {driverOptions.map(
+                              (name) => (
+                                <option
+                                  key={name}
+                                  value={name}
+                                >
+                                  {name}
+                                </option>
+                              )
+                            )}
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
         {tab === "alerts" && (
           <section className="panel">
             <div className="panel-head">
-              <h2>Alert history</h2>
-              <span>{alertCount} events</span>
+              <h2>
+                Alert history
+              </h2>
+              <span>
+                {alertCount} events
+              </span>
             </div>
 
             <div className="table-wrap">
@@ -736,28 +1209,43 @@ export default function Dashboard({
                       "Severity",
                       "Count",
                     ].map((heading) => (
-                      <th key={heading}>{heading}</th>
+                      <th key={heading}>
+                        {heading}
+                      </th>
                     ))}
                   </tr>
                 </thead>
 
                 <tbody>
-                  {filteredAlerts.map((a) => (
-                    <tr key={text(a.id)}>
-                      <td>{text(a.alert_date)}</td>
-                      <td>{text(a.registration)}</td>
-                      <td>
-                        {driverNames(
-                          text(a.registration),
-                          text(a.alert_date)
-                        )}
-                      </td>
-                      <td>{text(a.alert_type)}</td>
-                      <td>{text(a.description)}</td>
-                      <td>{text(a.severity)}</td>
-                      <td>{text(a.event_count)}</td>
-                    </tr>
-                  ))}
+                  {filteredAlerts.map(
+                    (a) => (
+                      <tr
+                        key={text(a.id)}
+                      >
+                        <td>
+                          {text(a.alert_date)}
+                        </td>
+                        <td>
+                          {text(a.registration)}
+                        </td>
+                        <td>
+                          {alertDriverName(a)}
+                        </td>
+                        <td>
+                          {text(a.alert_type)}
+                        </td>
+                        <td>
+                          {text(a.description)}
+                        </td>
+                        <td>
+                          {text(a.severity)}
+                        </td>
+                        <td>
+                          {text(a.event_count)}
+                        </td>
+                      </tr>
+                    )
+                  )}
                 </tbody>
               </table>
             </div>
@@ -767,8 +1255,12 @@ export default function Dashboard({
         {tab === "assignments" && (
           <section className="panel">
             <div className="panel-head">
-              <h2>Vehicle assignments</h2>
-              <span>{filteredAssignments.length} records</span>
+              <h2>
+                Vehicle assignments
+              </h2>
+              <span>
+                {filteredAssignments.length} records
+              </span>
             </div>
 
             <div className="table-wrap">
@@ -781,61 +1273,95 @@ export default function Dashboard({
                       "Driver",
                       "Inspector ID",
                     ].map((heading) => (
-                      <th key={heading}>{heading}</th>
+                      <th key={heading}>
+                        {heading}
+                      </th>
                     ))}
                   </tr>
                 </thead>
 
                 <tbody>
-                  {filteredAssignments.map((a) => (
-                    <tr key={text(a.id)}>
-                      <td>{text(a.assignment_date)}</td>
-                      <td>{text(a.registration)}</td>
-                      <td>{assignmentName(a)}</td>
-                      <td>{text(a.inspector_id)}</td>
-                    </tr>
-                  ))}
+                  {filteredAssignments.map(
+                    (a) => (
+                      <tr
+                        key={text(a.id)}
+                      >
+                        <td>
+                          {text(a.assignment_date)}
+                        </td>
+                        <td>
+                          {text(a.registration)}
+                        </td>
+                        <td>
+                          {assignmentName(a)}
+                        </td>
+                        <td>
+                          {text(a.inspector_id)}
+                        </td>
+                      </tr>
+                    )
+                  )}
                 </tbody>
               </table>
             </div>
           </section>
         )}
 
-        {tab === "import" && manager && (
-          <section className="panel import">
-            <h2>Import Google Sheets CSV exports</h2>
+        {tab === "import" &&
+          manager && (
+            <section className="panel import">
+              <h2>
+                Import Google Sheets CSV exports
+              </h2>
 
-            <p>
-              Export each sheet as CSV, then upload it here.
-              Importing does not delete existing data.
-            </p>
+              <p>
+                Export each sheet as CSV, then
+                upload it here. Importing does
+                not delete existing data.
+              </p>
 
-            {[
-              ["vehicles", "Vehicle Map"],
-              ["inspections", "Driver Assignments (DVIC)"],
-              ["alerts", "Netradyne Data"],
-              ["assignments", "Driver assignments mapping"],
-            ].map(([kind, label]) => (
-              <label key={kind} className="upload">
-                {label}
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  disabled={uploading}
-                  onChange={(e) => upload(e, kind)}
-                />
-              </label>
-            ))}
+              {[
+                ["vehicles", "Vehicle Map"],
+                [
+                  "inspections",
+                  "Driver Assignments (DVIC)",
+                ],
+                [
+                  "alerts",
+                  "Netradyne Data",
+                ],
+                [
+                  "assignments",
+                  "Driver assignments mapping",
+                ],
+              ].map(([kind, label]) => (
+                <label
+                  key={kind}
+                  className="upload"
+                >
+                  {label}
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    disabled={uploading}
+                    onChange={(e) =>
+                      upload(e, kind)
+                    }
+                  />
+                </label>
+              ))}
 
-            <p className="muted">
-              Driver accounts must be linked to their
-              inspector IDs before their records become
-              visible.
-            </p>
+              <p className="muted">
+                Driver accounts must be linked
+                to their inspector IDs before
+                their records become visible.
+              </p>
 
-            <p>{uploadMessage}</p>
-          </section>
-        )}
+              <p>
+                {uploadMessage}
+              </p>
+            </section>
+          )}
       </main>
     </div>
   );
