@@ -24,29 +24,38 @@ type AssignmentRow = {
   driver_name: string | null;
 };
 
+type InspectionRow = {
+  inspection_id: string;
+  inspection_date: string;
+  inspection_time: string | null;
+  registration: string;
+  inspector_id: string | null;
+  result: string | null;
+  vin: string | null;
+  source_timestamp: string | null;
+};
+
+const clean = (value: unknown) => String(value ?? '').trim();
+
+const registration = (value: unknown) =>
+  clean(value).toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+function validDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(value + 'T00:00:00Z');
+  return !Number.isNaN(date.getTime()) &&
+    date.toISOString().slice(0, 10) === value;
+}
+
+function validTime(value: string | null) {
+  return value === null ||
+    /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(value);
+}
+
 function validToken(received: string, expected: string) {
   const a = Buffer.from(received);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
-}
-
-function clean(value: unknown) {
-  return String(value ?? '').trim();
-}
-
-function registration(value: unknown) {
-  return clean(value)
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '');
-}
-
-function validDate(value: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-
-  const date = new Date(value + 'T00:00:00Z');
-
-  return !Number.isNaN(date.getTime()) &&
-    date.toISOString().slice(0, 10) === value;
 }
 
 export async function POST(request: NextRequest) {
@@ -62,8 +71,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const received = request.headers
-      .get('authorization')
+    const received = request.headers.get('authorization')
       ?.replace(/^Bearer\s+/i, '') || '';
 
     if (!validToken(received, token)) {
@@ -75,7 +83,8 @@ export async function POST(request: NextRequest) {
 
     const payload = await request.json();
 
-    if (!payload || typeof payload !== 'object') {
+    if (!payload || typeof payload !== 'object' ||
+        Array.isArray(payload)) {
       return NextResponse.json(
         { error: 'Invalid payload' },
         { status: 400 }
@@ -84,22 +93,44 @@ export async function POST(request: NextRequest) {
 
     const hasAlerts = Array.isArray(payload.alerts);
     const hasAssignments = Array.isArray(payload.assignments);
+    const hasInspections = Array.isArray(payload.inspections);
 
-    if (!hasAlerts && !hasAssignments) {
+    if (!hasAlerts && !hasAssignments && !hasInspections) {
       return NextResponse.json(
-        { error: 'Expected alerts or assignments' },
+        { error: 'Expected alerts, assignments or inspections' },
         { status: 400 }
       );
     }
 
     const rawAlerts = hasAlerts ? payload.alerts : [];
-    const rawAssignments = hasAssignments
-      ? payload.assignments
-      : [];
+    const rawAssignments = hasAssignments ? payload.assignments : [];
+    const rawInspections = hasInspections ? payload.inspections : [];
 
-    if (rawAlerts.length > 500 || rawAssignments.length > 500) {
+    if (
+      rawAlerts.length > 500 ||
+      rawAssignments.length > 500 ||
+      rawInspections.length > 500
+    ) {
       return NextResponse.json(
         { error: 'Maximum 500 records per type' },
+        { status: 400 }
+      );
+    }
+
+    const validObjects = (rows: unknown[]) =>
+      rows.every(row =>
+        row !== null &&
+        typeof row === 'object' &&
+        !Array.isArray(row)
+      );
+
+    if (
+      !validObjects(rawAlerts) ||
+      !validObjects(rawAssignments) ||
+      !validObjects(rawInspections)
+    ) {
+      return NextResponse.json(
+        { error: 'Invalid record format' },
         { status: 400 }
       );
     }
@@ -112,7 +143,7 @@ export async function POST(request: NextRequest) {
         alert_type: clean(row.alert_type),
         description: clean(row.description) || null,
         severity: clean(row.severity) || null,
-        event_count: Number(row.event_count) || 1
+        event_count: Number(row.event_count)
       })
     );
 
@@ -145,15 +176,35 @@ export async function POST(request: NextRequest) {
       !validDate(a.assignment_date) ||
       !a.registration ||
       !a.inspection_id ||
-      (
-        a.inspection_time !== null &&
-        !/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(
-          a.inspection_time
-        )
-      )
+      !validTime(a.inspection_time)
     )) {
       return NextResponse.json(
         { error: 'Invalid driver assignment data' },
+        { status: 400 }
+      );
+    }
+
+    const inspections: InspectionRow[] = rawInspections.map(
+      (row: Record<string, unknown>) => ({
+        inspection_id: clean(row.inspection_id),
+        inspection_date: clean(row.inspection_date),
+        inspection_time: clean(row.inspection_time) || null,
+        registration: registration(row.registration),
+        inspector_id: clean(row.inspector_id) || null,
+        result: clean(row.result) || null,
+        vin: clean(row.vin) || null,
+        source_timestamp: clean(row.source_timestamp) || null
+      })
+    );
+
+    if (inspections.some(i =>
+      !i.inspection_id ||
+      !validDate(i.inspection_date) ||
+      !i.registration ||
+      !validTime(i.inspection_time)
+    )) {
+      return NextResponse.json(
+        { error: 'Invalid DVIC inspection data' },
         { status: 400 }
       );
     }
@@ -168,13 +219,11 @@ export async function POST(request: NextRequest) {
     if (alerts.length) {
       const { error } = await supabase
         .from('netradyne_alerts')
-        .upsert(alerts, {
-          onConflict: 'source_event_id'
-        });
+        .upsert(alerts, { onConflict: 'source_event_id' });
 
       if (error) {
         return NextResponse.json(
-          { error: error.message },
+          { error: 'Alerts: ' + error.message },
           { status: 400 }
         );
       }
@@ -183,13 +232,24 @@ export async function POST(request: NextRequest) {
     if (assignments.length) {
       const { error } = await supabase
         .from('driver_assignments')
-        .upsert(assignments, {
-          onConflict: 'inspection_id'
-        });
+        .upsert(assignments, { onConflict: 'inspection_id' });
 
       if (error) {
         return NextResponse.json(
-          { error: error.message },
+          { error: 'Assignments: ' + error.message },
+          { status: 400 }
+        );
+      }
+    }
+
+    if (inspections.length) {
+      const { error } = await supabase
+        .from('dvic_inspections')
+        .upsert(inspections, { onConflict: 'inspection_id' });
+
+      if (error) {
+        return NextResponse.json(
+          { error: 'Inspections: ' + error.message },
           { status: 400 }
         );
       }
@@ -198,10 +258,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       alerts_processed: alerts.length,
-      assignments_processed: assignments.length
+      assignments_processed: assignments.length,
+      inspections_processed: inspections.length
     });
-
-  } catch {
+  } catch (error) {
+    console.error('RBTL sync failed:', error);
     return NextResponse.json(
       { error: 'Sync failed' },
       { status: 500 }
