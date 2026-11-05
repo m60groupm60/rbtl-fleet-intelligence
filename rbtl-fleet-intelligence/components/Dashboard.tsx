@@ -62,6 +62,7 @@ export default function Dashboard({
   const [profiles, setProfiles] = useState<Row[]>([]);
   const [overrides, setOverrides] = useState<Row[]>([]);
   const [roster, setRoster] = useState<string[]>([]);
+  const [driverMappings, setDriverMappings] = useState<Row[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -144,6 +145,10 @@ export default function Dashboard({
         setError(failures.join(" | "));
       }
 
+      if (manager) {
+        const mappingResponse = await fetch("/api/driver-mappings", {cache:"no-store"});
+        if (mappingResponse.ok) { const mappingData = await mappingResponse.json(); setDriverMappings(mappingData.mappings || []); }
+      }
       setVehicles(requests[0].data || []);
       setAssignments(requests[1].data || []);
       setInspections(requests[2].data || []);
@@ -189,6 +194,8 @@ export default function Dashboard({
   );
 
   const assignmentName = (row: Row): string => {
+    const mapped = driverMappings.find(m => text(m.inspector_id) === text(row.inspector_id));
+    if (mapped?.driver_name) return text(mapped.driver_name);
     const direct = text(row.driver_name).trim();
 
     if (direct && direct.toUpperCase() !== "UNMAPPED") {
@@ -753,7 +760,7 @@ export default function Dashboard({
     ["alerts", "Netradyne alerts"],
     ["daily", "Daily alert breakdown"],
     ["assignments", "Driver assignments"],
-    ...(manager ? [["import", "Import data"]] : []),
+    ...(manager ? [["import", "Import data"], ["driver-management", "Driver Management"]] : []),
   ];
 
   const pageTitles: Record<string, string> = {
@@ -764,6 +771,7 @@ export default function Dashboard({
     daily: "Daily alert breakdown",
     assignments: "Driver assignments",
     import: "Import data",
+    "driver-management": "Driver Management",
   };
 
   return (
@@ -786,6 +794,7 @@ export default function Dashboard({
                 setDailyDate(from);
                 setTo(from);
               }
+              if (id === "driver-management") { window.location.href = "/drivers"; return; }
               setTab(id);
             }}
           >
