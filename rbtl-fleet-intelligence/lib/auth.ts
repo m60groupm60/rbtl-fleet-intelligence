@@ -17,28 +17,23 @@ export async function getViewer() {
   } = await supabase.auth.getUser();
 
   if (error || !user) {
-    console.error(
-      '[AUTH] Session failed:',
-      error?.message || 'No authenticated user'
-    );
+    console.error('[AUTH] Session failed');
     return null;
   }
-
-  console.log('[AUTH] Session verified');
 
   const {
     data: profile,
     error: profileError
   } = await supabase
     .from('profiles')
-    .select('id,role,display_name,inspector_ids')
+    .select('id,full_name,role')
     .eq('id', user.id)
     .single();
 
   if (profileError || !profile) {
     console.error(
       '[AUTH] Profile lookup failed:',
-      profileError?.message || 'Profile not found'
+      profileError?.message
     );
     return null;
   }
@@ -52,6 +47,11 @@ export async function getViewer() {
 
   return {
     user,
-    profile: profile as Profile
+    profile: {
+      id: profile.id,
+      role: profile.role,
+      display_name: profile.full_name || '',
+      inspector_ids: []
+    } as Profile
   };
 }
