@@ -832,7 +832,7 @@ export default function Dashboard({
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          RBTL <span>FLEET INTELLIGENCE</span>
+          RBTL <span>HUB</span>
         </div>
 
         <div className="side-label">WORKSPACE</div>
