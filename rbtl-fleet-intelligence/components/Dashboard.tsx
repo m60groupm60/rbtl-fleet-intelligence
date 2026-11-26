@@ -1028,7 +1028,7 @@ export default function Dashboard({
               <button className="refresh" onClick={() => {setCqRefresh(v => v+1);void load();}}>Refresh</button>
             </section>
             {cqError && <p className="error">ClearQuote: {cqError}</p>}
-            <section className="metrics" style={{gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))"}}>{metrics.map(([label,value,color]) => <div key={label}><small>{label}</small><strong style={{color: String(color)}}>{value}</strong></div>)}</section>
+            <section className="metrics" style={{gridTemplateColumns:"repeat(6,minmax(0,1fr))",gap:"12px"}}>{metrics.map(([label,value,color]) => <div key={label}><small>{label}</small><strong style={{color: String(color)}}>{value}</strong></div>)}</section>
             <section className="panel">
               <div className="panel-head"><h2>Daily vehicle status</h2><span>{cqLastSync ? `ClearQuote record sync: ${new Date(cqLastSync).toLocaleString("en-GB",{timeZone:"Europe/London"})}` : "ClearQuote sync time unavailable"}</span></div>
               <div style={{padding:"12px 22px"}}><label><input type="checkbox" checked={overviewOutstanding} onChange={e => setOverviewOutstanding(e.target.checked)} /> Outstanding checks only</label><p className="muted">Vans on road uses recorded assignments, not live GPS. Outstanding means no matching completed record was returned. Alerts total includes matching unassigned alert records. Refreshes every 15 minutes while open.</p></div>
