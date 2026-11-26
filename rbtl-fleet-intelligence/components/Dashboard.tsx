@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { browserClient } from "@/lib/supabase";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 
 type Profile = {
   id: string;
@@ -807,23 +807,26 @@ export default function Dashboard({
   const cqLastSync = cqChecks.map(r => text(r.synced_at)).filter(Boolean).sort().pop();
 
   const navigation = [
-    ["overview", "Overview"],
-    ["vans", "Van breakdown"],
-    ["inspections", "DVIC inspections"],
-    ...(manager ? [["clearquote", "ClearQuote inspections"]] : []),
-    ["alerts", "Netradyne alerts"],
-    ["daily", "Daily alert breakdown"],
-    ["assignments", "Driver assignments"],
-    ...(manager ? [["import", "Import data"]] : []),
+    ["overview", "Daily Overview"],
+    ...(manager ? [["clearquote", "ClearQuote Inspections"]] : []),
+    ["daily", "Netradyne Alerts"],
+    ["assignments", "Driver Assignments"],
   ];
 
+  const navIcons: Record<string, ReactNode> = {
+    overview: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
+    clearquote: <><rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="m9 14 2 2 4-4"/></>,
+    daily: <><path d="M3 5h12v13H3zM15 9h4l3 4v5h-7"/><circle cx="7" cy="18" r="2"/><circle cx="18" cy="18" r="2"/></>,
+    assignments: <><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M17 13a5 5 0 0 1 4 5v3"/></>,
+  };
+
   const pageTitles: Record<string, string> = {
-    overview: manager ? "Daily fleet overview" : "Fleet overview",
+    overview: "Daily Overview",
     vans: "Van event breakdown",
     inspections: "Pre-trip DVIC",
     clearquote: "ClearQuote compliance",
     alerts: "Netradyne alerts",
-    daily: "Daily alert breakdown",
+    daily: "Netradyne Alerts",
     assignments: "Driver assignments",
     import: "Import data",
   };
@@ -831,11 +834,11 @@ export default function Dashboard({
   return (
     <div className="shell">
       <aside className="sidebar">
-        <div className="brand">
+        <div className="brand" style={{ marginBottom: 28 }}>
           RBTL <span>HUB</span>
         </div>
 
-        <div className="side-label">WORKSPACE</div>
+        
 
         {navigation.map(([id, label]) => (
           <button
@@ -856,7 +859,12 @@ export default function Dashboard({
               setTab(id);
             }}
           >
-            {label}
+            <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
+                {navIcons[id]}
+              </svg>
+              {label}
+            </span>
           </button>
         ))}
 
@@ -886,7 +894,7 @@ export default function Dashboard({
         </header>
 
         {tab !== "clearquote" && !(manager && tab === "overview") && <section className="filters">
-          <label>
+          {tab !== "daily" && <><label>
             From
             <input
               type="date"
@@ -908,7 +916,7 @@ export default function Dashboard({
                 setTo(e.target.value)
               }
             />
-          </label>
+          </label></>}
 
           <label>
             Vehicle
@@ -1206,6 +1214,8 @@ export default function Dashboard({
           </section>
         )}
 
+        {tab === "daily" && saveMessage && <p className="muted">{saveMessage}</p>}
+
         {error && (
           <p className="error">{error}</p>
         )}
@@ -1475,7 +1485,7 @@ export default function Dashboard({
         )}
 
         {manager &&
-          tab === "alerts" &&
+          tab === "daily" &&
           overrides.length > 0 && (
             <section className="panel">
               <div className="panel-head">
